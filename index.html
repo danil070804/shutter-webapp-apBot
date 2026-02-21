@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>Shutter Island | Elite Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="app.js"></script>
+    <script>
+        // Проверка данных при загрузке
+        console.log('User data from URL:', new URLSearchParams(window.location.search).toString());
+    </script>
+</head>
+<body>
+    <div id="app">
+        <div id="loader" class="loader">
+            <div class="loader-spinner"></div>
+            <div class="loader-text">INITIALIZING...</div>
+        </div>
+
+        <header class="glass-header">
+            <div class="header-content">
+                <div class="brand">
+                    <div class="logo-icon">🎭</div>
+                    <div class="logo-text">
+                        <div class="logo-title">SHUTTER ISLAND</div>
+                        <div class="logo-subtitle">ELITE NETWORK</div>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="icon-btn" onclick="toggleTheme()">🌓</button>
+                    <button class="icon-btn" onclick="refreshData()">🔄</button>
+                    <div class="online-status">
+                        <span class="pulse-dot"></span>
+                        <span class="online-count" id="onlineCount">Live</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-content" id="mainContent" style="display:none;">
+            <section class="hero-card">
+                <div class="rank-flair" id="rankFlair">ELITE</div>
+                <div class="user-info">
+                    <h1 class="username" id="username">@username</h1>
+                    <div class="user-meta">
+                        <span class="badge" id="roleBadge">WORKER</span>
+                        <span class="user-id" id="userId">ID: 000000</span>
+                    </div>
+                </div>
+
+                <div class="stats-hero">
+                    <div class="stat-big">
+                        <div class="stat-value" id="totalEarned">0</div>
+                        <div class="stat-label">TOTAL EARNED (₽)</div>
+                    </div>
+                    <div class="stat-divider"></div>
+                    <div class="stat-big">
+                        <div class="stat-value" id="totalDeals">0</div>
+                        <div class="stat-label">DEALS CLOSED</div>
+                    </div>
+                </div>
+
+                <div class="progress-elite">
+                    <div class="progress-header">
+                        <span>Next Rank Progress</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" id="rankProgress"></div>
+                    </div>
+                    <div class="progress-stats">
+                        <span id="currentProgress">0 / 0</span>
+                        <span id="nextRankName">TARGET</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="streak-banner" id="streakBanner" style="display:none;">
+                <div class="streak-fire">🔥</div>
+                <div class="streak-info">
+                    <div class="streak-count" id="streakCount">0 DAYS</div>
+                    <div class="streak-label">ACTIVE STREAK</div>
+                </div>
+                <div class="streak-timer" id="streakTimer">23:59:59</div>
+            </section>
+
+            <nav class="tab-nav">
+                <button class="tab-btn active" onclick="switchTab('overview')" data-tab="overview">
+                    <span class="tab-icon">📊</span>
+                    <span class="tab-label">Обзор</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('analytics')" data-tab="analytics">
+                    <span class="tab-icon">📈</span>
+                    <span class="tab-label">Аналитика</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('top')" data-tab="top">
+                    <span class="tab-icon">🏆</span>
+                    <span class="tab-label">Топ</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('team')" data-tab="team">
+                    <span class="tab-icon">👥</span>
+                    <span class="tab-label">Команда</span>
+                </button>
+                <button class="tab-btn" onclick="switchTab('ref')" data-tab="ref">
+                    <span class="tab-icon">🔗</span>
+                    <span class="tab-label">Реферал</span>
+                </button>
+            </nav>
+
+            <section class="tab-content active" id="overview-tab">
+                <div class="grid-2">
+                    <div class="info-card">
+                        <div class="info-icon">📅</div>
+                        <div class="info-content">
+                            <div class="info-label">В команде</div>
+                            <div class="info-value" id="daysInTeam">0 дней</div>
+                        </div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-icon">🏅</div>
+                        <div class="info-content">
+                            <div class="info-label">Позиция</div>
+                            <div class="info-value" id="globalRank">#--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="activity-chart-card">
+                    <div class="card-header">
+                        <h3>Активность за 7 дней</h3>
+                        <div class="chart-legend">
+                            <span class="legend-item"><span class="dot orange"></span>Профиты</span>
+                        </div>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="activityChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="achievements">
+                    <h3 class="section-title">🏆 Достижения</h3>
+                    <div class="achievements-grid" id="achievementsGrid"></div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="analytics-tab">
+                <div class="analytics-grid">
+                    <div class="chart-card wide">
+                        <div class="card-header">
+                            <h3>Динамика доходов</h3>
+                            <select class="period-select" onchange="updateCharts(this.value)">
+                                <option value="7">7 дней</option>
+                                <option value="30">30 дней</option>
+                                <option value="90">3 месяца</option>
+                            </select>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="incomeChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="chart-card">
+                        <div class="card-header"><h3>Направления</h3></div>
+                        <div class="chart-container">
+                            <canvas id="directionsChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="chart-card">
+                        <div class="card-header"><h3>Эффективность</h3></div>
+                        <div class="efficiency-metrics" id="efficiencyMetrics">
+                            <div class="metric">
+                                <div class="metric-value" id="convRate">0%</div>
+                                <div class="metric-label">Конверсия</div>
+                            </div>
+                            <div class="metric">
+                                <div class="metric-value" id="avgCheck">0₽</div>
+                                <div class="metric-label">Средний чек</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="top-tab">
+                <div class="top-filters">
+                    <button class="filter-btn active" onclick="filterTop('all')">Все время</button>
+                    <button class="filter-btn" onclick="filterTop('month')">Месяц</button>
+                    <button class="filter-btn" onclick="filterTop('week')">Неделя</button>
+                </div>
+                <div class="top-list" id="topList"></div>
+            </section>
+
+            <section class="tab-content" id="team-tab">
+                <div class="team-placeholder">
+                    <div class="team-icon">👥</div>
+                    <h3>Команда</h3>
+                    <p>Данные о команде загружаются из бота...</p>
+                </div>
+            </section>
+
+            <section class="tab-content" id="ref-tab">
+                <div class="ref-stats-card">
+                    <div class="ref-income">
+                        <div class="ref-income-label">Реферальный доход</div>
+                        <div class="ref-income-value" id="refIncome">0 ₽</div>
+                    </div>
+                    <div class="ref-counts">
+                        <div class="ref-count">
+                            <div class="ref-count-value" id="refCount">0</div>
+                            <div class="ref-count-label">Всего</div>
+                        </div>
+                        <div class="ref-count">
+                            <div class="ref-count-value" id="refActive">0</div>
+                            <div class="ref-count-label">Активны</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="ref-link-section">
+                    <div class="ref-link-label">Твоя реферальная ссылка</div>
+                    <div class="ref-link-box">
+                        <code id="refLink" class="ref-link">https://t.me/bot?start=ref000</code>
+                        <button class="copy-btn" onclick="copyRef()">
+                            <span class="copy-icon">📋</span>
+                            <span>Копировать</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <div id="toast" class="toast">
+            <div class="toast-icon">🔔</div>
+            <div class="toast-content">
+                <div class="toast-title">Уведомление</div>
+                <div class="toast-message">Текст сообщения</div>
+            </div>
+        </div>
+
+        <button class="fab" onclick="quickAction()">⚡</button>
+    </div>
+</body>
+</html>
