@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app
 
 # Запуск бота и web одновременно
-CMD ["bash", "-lc", "python bot.py & uvicorn server:app --host 0.0.0.0 --port $PORT"]
+CMD ["bash", "-lc", "uvicorn server:app --host 0.0.0.0 --port $PORT"]
