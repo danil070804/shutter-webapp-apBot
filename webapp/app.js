@@ -20,11 +20,12 @@ const urlParams = new URLSearchParams(window.location.search);
 const userData = {
     id: urlParams.get('uid') || tg?.initDataUnsafe?.user?.id || '0',
     username: urlParams.get('uname') || tg?.initDataUnsafe?.user?.username || 'guest',
-    profits_count: parseInt(urlParams.get('profits')) || 0,
-    profits_sum: parseInt(urlParams.get('sum')) || 0,
-    current_streak: parseInt(urlParams.get('streak')) || 0,
-    max_streak: parseInt(urlParams.get('max_streak')) || 0,
-    goal: parseInt(urlParams.get('goal')) || 0,
+    // Остальные поля подтянем с сервера (из БД)
+    profits_count: 0,
+    profits_sum: 0,
+    current_streak: 0,
+    max_streak: 0,
+    goal: 0,
     role: urlParams.get('role') || 'worker',
     mentor_id: urlParams.get('mentor') || ''
 };
@@ -39,7 +40,7 @@ function getRank(profits) {
     return {name: 'NEW', emoji: '🟢', color: '#00ff00'};
 }
 
-const rank = getRank(userData.profits_count);
+// rank рассчитывается после загрузки данных
 
 // Форматирование чисел
 function formatMoney(num) {
@@ -47,7 +48,7 @@ function formatMoney(num) {
 }
 
 // Инициализация приложения
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => {
         document.getElementById('loader').style.opacity = '0';
         setTimeout(() => {
