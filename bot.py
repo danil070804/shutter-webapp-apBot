@@ -620,7 +620,7 @@ def dashboard_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
     if WEBAPP_URL:
         # Добавляем параметры к URL
         params = f"?uid={user['user_id']}&uname={user.get('username', '')}&profits={user['profits_count']}&sum={int(user['profits_sum'])}&streak={user['current_streak']}&max_streak={user['max_streak']}&goal={user['goal_profits']}&role={user['role']}&mentor={user.get('mentor_id', '')}"
-        webapp_url_with_data = WEBAPP_URL.rstrip('/') + '/' + params
+        webapp_url_with_data = WEBAPP_URL.rstrip('/') + params
 
     buttons = [
         [
@@ -1348,21 +1348,18 @@ async def main():
 
     @dp.message(F.text == "⬅️ Назад")
     async def back_cmd(message: Message):
-        # ReplyKeyboard "залипает" пока явно не убрать — поэтому снимаем её
-        try:
-            await message.answer(" ", reply_markup=ReplyKeyboardRemove())
-        except Exception:
-            pass
+        user_id = message.from_user.id
+        user = get_user(user_id)
 
-        user = get_user(message.from_user.id)
-        if user and user.get('status') == 'approved':
-            await send_profile(bot, message.chat.id, message.from_user.id)
+        # Возвращаем пользователю основное меню (ReplyKeyboard)
+        kb = main_menu_kb(is_admin=(user_id in ADMIN_IDS))
+
+        if user and user.get("status") == "approved":
+            # Обновляем профиль (инлайн‑панель) и возвращаем меню кнопок
+            await send_profile(bot, message.chat.id, user_id)
+            await message.answer("🏠 Главное меню", reply_markup=kb)
         else:
-            await message.answer("Главное меню", reply_markup=main_menu_kb())
-
-    # ==========================
-    # ОБРАБОТЧИКИ КНОПОК ПРОФИЛЯ
-    # ==========================
+            await message.answer("🏠 Главное меню", reply_markup=kb)
 
     @dp.message(F.text == "👤 Профиль")
     async def profile_handler(message: Message):
