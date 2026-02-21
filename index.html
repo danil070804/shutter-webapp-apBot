@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Shutter Island | Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>:root{--bg:#0a0a0a;--surface:#141414;--primary:#ff6b00;--text:#fff;--text-sec:#888;--border:#2a2a2a;--success:#00c853}
+*{margin:0;padding:0;box-sizing:border-box;font-family:Segoe UI,sans-serif}body{background:var(--bg);color:var(--text)}
+.layout{display:grid;grid-template-columns:260px 1fr}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:24px;position:fixed;width:260px;height:100vh}
+.logo{display:flex;align-items:center;gap:12px;margin-bottom:32px;padding-bottom:24px;border-bottom:1px solid var(--border)}
+.logo-icon{width:40px;height:40px;background:linear-gradient(135deg,var(--primary),#ff8533);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.nav-item{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;color:var(--text-sec);text-decoration:none;margin-bottom:4px;transition:.2s}
+.nav-item:hover,.nav-item.active{background:rgba(255,107,0,.1);color:var(--primary)}
+.main{margin-left:260px;padding:32px;width:calc(100% - 260px)}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:32px}
+.btn{padding:10px 20px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;display:flex;align-items:center;gap:8px}
+.btn-primary{background:linear-gradient(135deg,var(--primary),#ff8533);border:none;font-weight:600}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin-bottom:32px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;position:relative}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--primary),#ff8533)}
+.stat-value{font-size:32px;font-weight:800;margin:12px 0}
+.stat-label{color:var(--text-sec);font-size:13px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.section{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;margin-bottom:24px}
+.chart-container{height:300px;position:relative}
+.live-log{height:300px;overflow-y:auto;font-family:monospace;font-size:13px}
+.log-entry{padding:10px;border-bottom:1px solid var(--border);display:flex;gap:12px;animation:slideIn .3s}
+@keyframes slideIn{from{opacity:0;transform:translateX(-20px)}to{opacity:1;transform:translateX(0)}}
+.log-time{color:var(--text-sec);min-width:60px}
+.log-type{padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}
+.log-type.profit{background:rgba(0,200,83,.2);color:var(--success)}
+.live-indicator{display:flex;align-items:center;gap:6px;color:var(--success);font-size:12px;font-weight:700}
+.live-dot{width:8px;height:8px;background:var(--success);border-radius:50%;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@media(max-width:1200px){.stats-grid{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}}
+@media(max-width:768px){.sidebar{display:none}.main{margin-left:0;width:100%}.stats-grid{grid-template-columns:1fr}}
+</style></head><body><div class="layout">
+<aside class="sidebar"><div class="logo"><div class="logo-icon">🎭</div><div style="font-size:20px;font-weight:800">ADMIN</div></div>
+<div style="margin-bottom:24px"><div style="font-size:11px;text-transform:uppercase;color:var(--text-sec);margin-bottom:12px;padding-left:12px">Основное</div>
+<a href="#" class="nav-item active"><i class="fas fa-chart-line"></i><span>Дашборд</span></a>
+<a href="#" class="nav-item"><i class="fas fa-users"></i><span>Пользователи</span></a>
+<a href="#" class="nav-item"><i class="fas fa-coins"></i><span>Профиты</span></a></div></aside>
+<main class="main"><header class="header"><div><h1 style="font-size:28px;margin-bottom:4px">Command Center</h1><p style="color:var(--text-sec);font-size:14px">Real-time monitoring</p></div>
+<div style="display:flex;gap:12px;align-items:center"><div class="live-indicator"><span class="live-dot"></span><span>LIVE</span></div><button class="btn btn-primary" onclick="broadcast()"><i class="fas fa-paper-plane"></i>Рассылка</button></div></header>
+<div class="stats-grid"><div class="stat-card"><div style="font-size:12px;color:var(--text-sec);margin-bottom:8px">Активных воркеров</div><div class="stat-value" id="stat1">156</div><div style="font-size:12px;color:var(--success)">+12%</div></div>
+<div class="stat-card"><div style="font-size:12px;color:var(--text-sec);margin-bottom:8px">Оборот сегодня</div><div class="stat-value" style="color:var(--success)" id="stat2">₽2.4M</div><div style="font-size:12px;color:var(--success)">+8.5%</div></div>
+<div class="stat-card"><div style="font-size:12px;color:var(--text-sec);margin-bottom:8px">Активных серий</div><div class="stat-value" id="stat3">24</div></div>
+<div class="stat-card"><div style="font-size:12px;color:var(--text-sec);margin-bottom:8px">Новых заявок</div><div class="stat-value" id="stat4">8</div><div style="font-size:12px;color:var(--success)">+3</div></div></div>
+<div class="grid-2"><div class="section"><h3 style="margin-bottom:20px">Динамика профитов</h3><div class="chart-container"><canvas id="mainChart"></canvas></div></div>
+<div class="section"><h3 style="margin-bottom:20px">Live Activity</h3><div class="live-log" id="liveLog"></div></div></div></main></div>
+<script>const ctx=document.getElementById('mainChart').getContext('2d');new Chart(ctx,{type:'line',data:{labels:['00','04','08','12','16','20','23'],datasets:[{data:[12,8,15,35,42,58,45],borderColor:'#ff6b00',backgroundColor:'rgba(255,107,0,0.1)',borderWidth:3,tension:0.4,fill:true}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{grid:{color:'rgba(255,255,255,0.05)'}},x:{grid:{display:false}}}}});
+const logs=[{t:'profit',m:'Новый профит на ₽45,000 от @worker_12'},{t:'profit',m:'Крупный профит: ₽120,000 от @elite'},{t:'profit',m:'Профит на ₽67,000 от @pro'}];
+function addLog(){const l=logs[Math.floor(Math.random()*logs.length)];const time=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});const div=document.createElement('div');div.className='log-entry';div.innerHTML=`<span class="log-time">${time}</span><span class="log-type ${l.t}">${l.t.toUpperCase()}</span><span>${l.m}</span>`;document.getElementById('liveLog').insertBefore(div,document.getElementById('liveLog').firstChild);if(document.getElementById('liveLog').children.length>20)document.getElementById('liveLog').removeChild(document.getElementById('liveLog').lastChild)}
+for(let i=0;i<5;i++)addLog();setInterval(addLog,3000);setInterval(()=>{document.getElementById('stat2').textContent='₽'+(2.4+Math.random()*0.1).toFixed(1)+'M'},5000);function broadcast(){const msg=prompt('Сообщение для рассылки:');if(msg)alert('Рассылка запущена на 156 пользователей')}</script></body></html>
