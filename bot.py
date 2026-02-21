@@ -977,11 +977,75 @@ async def main():
                 except ValueError:
                     referrer_id = None
 
-        create_or_update_user(user_id, username, "pending", referrer_id)
+        # НЕ сбрасываем статус при каждом /start
+        user = get_user(user_id)
+        if user is None:
+            create_or_update_user(user_id, username, "pending", referrer_id)
+            await message.answer(
+                "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>
+"
+                "Чтобы подать заявку, ответь на 3 вопроса:
+"
+                "<b>1. Откуда узнали о нас? 🤔</b>",
+                parse_mode="HTML"
+            )
+            await state.set_state(ApplicationForm.q1)
+            return
+
+        # Обновляем username/role, но сохраняем текущий status
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            role = "admin" if user_id in ADMIN_IDS else "worker"
+            cur.execute("UPDATE users SET username = ?, role = ? WHERE user_id = ?", (username, role, user_id))
+            if referrer_id is not None:
+                cur.execute(
+                    "UPDATE users SET referrer_id = COALESCE(referrer_id, ?) WHERE user_id = ?",
+                    (referrer_id, user_id),
+                )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+        status = (user.get("status") or "pending").lower()
+
+        if status == "approved":
+            # Уже одобрен — просто открываем панель/профиль
+            await send_profile(bot, message.chat.id, user_id)
+            await state.clear()
+            return
+
+        if status == "rejected":
+            # Даем возможность подать заявку заново
+            update_user_answers(user_id, q1=None, q2=None, q3=None, status="pending")
+            await message.answer(
+                "📝 Ваша предыдущая заявка была отклонена.
+"
+                "Давайте подадим новую.
+
+"
+                "<b>1. Откуда узнали о нас? 🤔</b>",
+                parse_mode="HTML"
+            )
+            await state.set_state(ApplicationForm.q1)
+            return
+
+        # pending
+        if user.get("q1") or user.get("q2") or user.get("q3"):
+            await message.answer(
+                "⏳ Ваша заявка уже отправлена и ожидает рассмотрения.
+"
+                "Как только вас одобрят — станет доступна ворк‑панель."
+            )
+            await state.clear()
+            return
 
         await message.answer(
-            "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>\n"
-            "Чтобы подать заявку, ответь на 3 вопроса:\n"
+            "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>
+"
+            "Чтобы подать заявку, ответь на 3 вопроса:
+"
             "<b>1. Откуда узнали о нас? 🤔</b>",
             parse_mode="HTML"
         )
@@ -1310,7 +1374,165 @@ async def main():
     async def profile_handler(message: Message):
         await send_profile(bot, message.chat.id, message.from_user.id)
 
+    
     # ==========================
+    # КОМАНДЫ (для чата и лички)
+    # ==========================
+
+    HELP_TEXT = (
+        "🆘 <b>Помощь</b>\n\n"
+        "Доступные команды:\n"
+        "/start — открыть ворк-панель\n"
+        "/me — моя статистика и место в топе\n"
+        "/kurator — список наставников\n"
+        "/top — топ воркеров по профитам\n"
+        "/top_week — топ за последние 7 дней\n"
+        "/top_month — топ за текущий месяц\n"
+        "/card — реквизиты (Прямик)\n"
+        "/kassa — общая касса проекта\n"
+        "/goal — цель по профитам (пример: /goal 10)\n"
+        "/streak — серия дней с профитом\n"
+        "/panel — инлайн панель\n"
+        "/help — список команд"
+    )
+
+    def _require_approved(user_id: int) -> bool:
+        u = get_user(user_id)
+        return bool(u and (u.get("status") == "approved"))
+
+    def _month_start_ts(tz: ZoneInfo) -> int:
+        now = datetime.now(tz)
+        ms = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return int(ms.timestamp())
+
+    def _top_since(ts: int | None, limit: int = 20) -> list[tuple[int, float]]:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        if ts is None:
+            cur.execute(
+                "SELECT user_id, COALESCE(SUM(total_amount),0) as s "
+                "FROM profits GROUP BY user_id ORDER BY s DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            cur.execute(
+                "SELECT user_id, COALESCE(SUM(total_amount),0) as s "
+                "FROM profits WHERE created_at >= ? GROUP BY user_id ORDER BY s DESC LIMIT ?",
+                (ts, limit),
+            )
+        rows = cur.fetchall()
+        conn.close()
+        return [(int(r[0]), float(r[1] or 0)) for r in rows]
+
+    async def _send_top(message: Message, title: str, rows: list[tuple[int, float]]):
+        if not rows:
+            await message.answer(f"🏁 <b>{title}</b>\n\nПока нет данных.", parse_mode="HTML")
+            return
+        lines = [f"🏁 <b>{title}</b>\n"]
+        for i, (uid, amount) in enumerate(rows, start=1):
+            u = get_user(uid)
+            name = (u.get("username") if u else None) or f"ID {uid}"
+            tag = f"@{name}" if name and not str(name).startswith("ID ") else name
+            lines.append(f"{i}. {tag} — <b>{amount:,.0f}</b> ₽")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+
+    @dp.message(Command("help"))
+    async def cmd_help(message: Message):
+        await message.answer(HELP_TEXT, parse_mode="HTML")
+
+    @dp.message(Command("me"))
+    async def cmd_me(message: Message):
+        if not _require_approved(message.from_user.id):
+            await message.answer("Профиль будет доступен после одобрения вашей заявки.")
+            return
+        await send_profile(bot, message.chat.id, message.from_user.id)
+
+    @dp.message(Command("panel"))
+    async def cmd_panel(message: Message):
+        if not _require_approved(message.from_user.id):
+            await message.answer("Панель будет доступна после одобрения вашей заявки.")
+            return
+        # Отправляем профиль (в нём есть инлайн панель)
+        await send_profile(bot, message.chat.id, message.from_user.id)
+
+    @dp.message(Command("kurator"))
+    async def cmd_kurator(message: Message):
+        mentors = get_all_mentors()
+        if not mentors:
+            text = "🧑‍🏫 <b>Наставники</b>\n\nПока нет назначенных."
+        else:
+            lines = ["🧑‍🏫 <b>Наши наставники</b>\n"]
+            for m_ in mentors:
+                name = m_.get("username") or f"ID {m_['user_id']}"
+                lines.append(f"• @{name}" if m_.get("username") else f"• {name}")
+            text = "\n".join(lines)
+        await message.answer(text, parse_mode="HTML")
+
+    @dp.message(Command("top"))
+    async def cmd_top(message: Message):
+        await _send_top(message, "ТОП воркеров (всё время)", _top_since(None, limit=20))
+
+    @dp.message(Command("top_week"))
+    async def cmd_top_week(message: Message):
+        ts = int(time.time()) - 7 * 24 * 3600
+        await _send_top(message, "ТОП воркеров (7 дней)", _top_since(ts, limit=20))
+
+    @dp.message(Command("top_month"))
+    async def cmd_top_month(message: Message):
+        tz = ZoneInfo(TIMEZONE) if TIMEZONE else ZoneInfo("UTC")
+        ts = _month_start_ts(tz)
+        await _send_top(message, "ТОП воркеров (текущий месяц)", _top_since(ts, limit=20))
+
+    @dp.message(Command("card"))
+    async def cmd_card(message: Message):
+        req = get_setting("pramik_requisites", "Не настроены")
+        await message.answer(f"📟 <b>Прямик</b>\n\n<pre>{req}</pre>", parse_mode="HTML")
+
+    @dp.message(Command("kassa"))
+    async def cmd_kassa(message: Message):
+        k = get_kassa_stats()
+        await message.answer(
+            "💼 <b>Касса проекта</b>\n\n"
+            f"📆 День: <b>{k['day']:,.0f}</b> ₽\n"
+            f"🗓 Неделя: <b>{k['week']:,.0f}</b> ₽\n"
+            f"🗓 Месяц: <b>{k['month']:,.0f}</b> ₽\n"
+            f"💰 Всего: <b>{k['all']:,.0f}</b> ₽",
+            parse_mode="HTML",
+        )
+
+    @dp.message(Command("goal"))
+    async def cmd_goal(message: Message, state: FSMContext):
+        if not _require_approved(message.from_user.id):
+            await message.answer("Цель доступна после одобрения заявки.")
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) == 2:
+            try:
+                goal = int(parts[1].strip())
+                if 1 <= goal <= 10000:
+                    set_user_goal(message.from_user.id, goal)
+                    await message.answer(f"✅ Цель: {goal} профитов")
+                else:
+                    await message.answer("❌ Введите число от 1 до 10000")
+            except ValueError:
+                await message.answer("❌ Пример: /goal 10")
+        else:
+            await message.answer("❌ Пример: /goal 10")
+
+    @dp.message(Command("streak"))
+    async def cmd_streak(message: Message):
+        if not _require_approved(message.from_user.id):
+            await message.answer("Streak доступен после одобрения заявки.")
+            return
+        user = get_user(message.from_user.id)
+        text = (
+            f"🔥 <b>Ваша серия</b>\n\n"
+            f"Текущая: <b>{user.get('current_streak', 0)} дней</b>\n"
+            f"Рекорд: <b>{user.get('max_streak', 0)} дней</b>\n"
+            f"Последний: {format_last_profit_date(user.get('last_profit_date'))}"
+        )
+        await message.answer(text, parse_mode="HTML")
+# ==========================
     # ГЛАВНОЕ МЕНЮ (ReplyKeyboard)
     # ==========================
 
