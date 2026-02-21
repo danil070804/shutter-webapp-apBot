@@ -15,20 +15,45 @@ try {
     console.log('Telegram WebApp not found');
 }
 
-// Получаем данные из URL параметров (переданные ботом)
+// Взрослый режим:
+// - НЕ доверяем query params (их легко подделать)
+// - Берём user.id из Telegram initDataUnsafe (только для UI)
+// - Реальные данные подтягиваем с бэка через initData (подпись проверяется на сервере)
 const urlParams = new URLSearchParams(window.location.search);
 const userData = {
-    id: urlParams.get('uid') || tg?.initDataUnsafe?.user?.id || '0',
-    username: urlParams.get('uname') || tg?.initDataUnsafe?.user?.username || 'guest',
-    // Остальные поля подтянем с сервера (из БД)
+    id: (tg?.initDataUnsafe?.user?.id || urlParams.get('uid') || '0').toString(),
+    username: (tg?.initDataUnsafe?.user?.username || urlParams.get('uname') || 'guest').toString(),
+    // ниже будут заполнены после запроса к API
     profits_count: 0,
     profits_sum: 0,
     current_streak: 0,
     max_streak: 0,
     goal: 0,
-    role: urlParams.get('role') || 'worker',
-    mentor_id: urlParams.get('mentor') || ''
+    role: 'worker',
+    mentor_id: ''
 };
+
+async function fetchProfile() {
+    // Если мы не в Telegram — работаем в демо режиме (или можешь оставить urlParams как fallback)
+    if (!tg || !tg.initData) return null;
+
+    try {
+        const resp = await fetch('/api/me', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Telegram-Init-Data': tg.initData
+            },
+            body: JSON.stringify({ initData: tg.initData })
+        });
+        if (!resp.ok) throw new Error('API error ' + resp.status);
+        return await resp.json();
+    } catch (e) {
+        console.log('fetchProfile failed', e);
+        return null;
+    }
+}
+
 
 // Расчет ранга
 function getRank(profits) {
@@ -40,7 +65,7 @@ function getRank(profits) {
     return {name: 'NEW', emoji: '🟢', color: '#00ff00'};
 }
 
-// rank рассчитывается после загрузки данных
+const rank = getRank(userData.profits_count);
 
 // Форматирование чисел
 function formatMoney(num) {
@@ -55,6 +80,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.getElementById('loader').style.display = 'none';
             document.getElementById('mainContent').style.display = 'block';
             loadRealData();
+            // подтягиваем актуальные данные с сервера
+            const api = await fetchProfile();
+            if (api && api.profile) {
+                Object.assign(userData, {
+                    id: (api.profile.user_id ?? userData.id).toString(),
+                    username: (api.profile.username ?? userData.username).toString(),
+                    profits_count: parseInt(api.profile.profits_count || 0),
+                    profits_sum: parseInt(api.profile.profits_sum || 0),
+                    current_streak: parseInt(api.profile.current_streak || 0),
+                    max_streak: parseInt(api.profile.max_streak || 0),
+                    goal: parseInt(api.profile.goal_profits || 0),
+                    role: (api.profile.role || 'worker').toString(),
+                    mentor_id: (api.profile.mentor_id || '').toString(),
+                });
+                // пересчёт ранга и перерисовка
+                const r = getRank(userData.profits_count);
+                document.getElementById('rankFlair').textContent = r.name;
+                document.getElementById('roleBadge').textContent = userData.role.toUpperCase();
+                animateValue('totalEarned', 0, userData.profits_sum, 800, true);
+                animateValue('totalDeals', 0, userData.profits_count, 600);
+            }
+
             initCharts();
             updateStreakTimer();
         }, 500);
