@@ -187,22 +187,32 @@ def get_user(user_id: int) -> Optional[Dict[str, Any]]:
 
 def create_or_update_user(user_id: int, username: Optional[str], status: str,
                           referrer_id: Optional[int] = None) -> None:
-    role = "admin" if user_id in ADMIN_IDS else "worker"
+    """Создаёт пользователя или обновляет username/status, не перезатирая роль."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    # Если пользователь уже есть — сохраняем текущую роль
+    cur.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
+    existing = cur.fetchone()
+    if existing and existing[0]:
+        role = existing[0]
+    else:
+        role = "admin" if user_id in ADMIN_IDS else "worker"
+
     cur.execute("""
         INSERT INTO users (user_id, username, status, role, referrer_id)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(user_id) DO UPDATE SET
             username = excluded.username,
-            status = excluded.status,
-            role = excluded.role
+            status = excluded.status
     """, (user_id, username, status, role, referrer_id))
+
     if referrer_id is not None:
         cur.execute(
             "UPDATE users SET referrer_id = COALESCE(referrer_id, ?) WHERE user_id = ?",
             (referrer_id, user_id),
         )
+
     conn.commit()
     conn.close()
 
@@ -615,12 +625,8 @@ def dashboard_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
     is_admin = user.get("user_id") in ADMIN_IDS
     is_mentor = user.get("role") == "mentor"
 
-    # Формируем URL с реальными данными пользователя
-    webapp_url_with_data = WEBAPP_URL
-    if WEBAPP_URL:
-        # Добавляем параметры к URL
-        params = f"?uid={user['user_id']}&uname={user.get('username', '')}&profits={user['profits_count']}&sum={int(user['profits_sum'])}&streak={user['current_streak']}&max_streak={user['max_streak']}&goal={user['goal_profits']}&role={user['role']}&mentor={user.get('mentor_id', '')}"
-        webapp_url_with_data = WEBAPP_URL.rstrip('/') + params
+    # WebApp: не передаём данные в query (безопаснее) — WebApp сам подтянет профиль через initData
+    webapp_url_with_data = WEBAPP_URL.rstrip('/') if WEBAPP_URL else ''
 
     buttons = [
         [
