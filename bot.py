@@ -964,94 +964,88 @@ async def main():
     # ==========================
 
     @dp.message(CommandStart())
-    async def cmd_start(message: Message, state: FSMContext):
-        user_id = message.from_user.id
-        username = message.from_user.username
+async def cmd_start(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    username = message.from_user.username
 
-        referrer_id = None
-        if message.text and len(message.text.split()) > 1:
-            arg = message.text.split()[1]
-            if arg.startswith("ref"):
-                try:
-                    referrer_id = int(arg[3:])
-                except ValueError:
-                    referrer_id = None
+    referrer_id = None
+    if message.text and len(message.text.split()) > 1:
+        arg = message.text.split()[1]
+        if arg.startswith("ref"):
+            try:
+                referrer_id = int(arg[3:])
+            except ValueError:
+                referrer_id = None
 
-        # НЕ сбрасываем статус при каждом /start
-        user = get_user(user_id)
-        if user is None:
-            create_or_update_user(user_id, username, "pending", referrer_id)
-            await message.answer(
-                "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>
-"
-                "Чтобы подать заявку, ответь на 3 вопроса:
-"
-                "<b>1. Откуда узнали о нас? 🤔</b>",
-                parse_mode="HTML"
-            )
-            await state.set_state(ApplicationForm.q1)
-            return
+    # НЕ сбрасываем статус при каждом /start
+    user = get_user(user_id)
 
-        # Обновляем username/role, но сохраняем текущий status
+    # Текст приветствия/анкеты (без поломанных переносов строк)
+    intro_text = (
+        "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>\n\n"
+        "Чтобы подать заявку, ответь на 3 вопроса:\n\n"
+        "<b>1. Откуда узнали о нас? 🤔</b>"
+    )
+
+    if user is None:
+        create_or_update_user(user_id, username, "pending", referrer_id)
+        await message.answer(intro_text, parse_mode="HTML")
+        await state.set_state(ApplicationForm.q1)
+        return
+
+    # Обновляем username/role, но сохраняем текущий status
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        role = "admin" if user_id in ADMIN_IDS else "worker"
+        cur.execute(
+            "UPDATE users SET username = COALESCE(?, username), role = ? WHERE user_id = ?",
+            (username, role, user_id),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            role = "admin" if user_id in ADMIN_IDS else "worker"
-            cur.execute("UPDATE users SET username = ?, role = ? WHERE user_id = ?", (username, role, user_id))
-            if referrer_id is not None:
-                cur.execute(
-                    "UPDATE users SET referrer_id = COALESCE(referrer_id, ?) WHERE user_id = ?",
-                    (referrer_id, user_id),
-                )
-            conn.commit()
             conn.close()
         except Exception:
             pass
 
-        status = (user.get("status") or "pending").lower()
+    # Перечитываем после обновления
+    user = get_user(user_id)
+    status = (user or {}).get("status")
 
-        if status == "approved":
-            # Уже одобрен — просто открываем панель/профиль
-            await send_profile(bot, message.chat.id, user_id)
-            await state.clear()
-            return
+    if status == "approved":
+        await state.clear()
+        await send_profile(bot, message.chat.id, user_id)
+        return
 
-        if status == "rejected":
-            # Даем возможность подать заявку заново
-            update_user_answers(user_id, q1=None, q2=None, q3=None, status="pending")
-            await message.answer(
-                "📝 Ваша предыдущая заявка была отклонена.
-"
-                "Давайте подадим новую.
-
-"
-                "<b>1. Откуда узнали о нас? 🤔</b>",
-                parse_mode="HTML"
-            )
-            await state.set_state(ApplicationForm.q1)
-            return
-
-        # pending
-        if user.get("q1") or user.get("q2") or user.get("q3"):
-            await message.answer(
-                "⏳ Ваша заявка уже отправлена и ожидает рассмотрения.
-"
-                "Как только вас одобрят — станет доступна ворк‑панель."
-            )
-            await state.clear()
-            return
-
+    if status == "rejected":
+        # Даем возможность подать заявку заново
+        update_user_answers(user_id, q1=None, q2=None, q3=None, status="pending")
         await message.answer(
-            "🎭 <b>Добро пожаловать в SHUTTER ISLAND!</b>
-"
-            "Чтобы подать заявку, ответь на 3 вопроса:
-"
+            "📝 Ваша предыдущая заявка была отклонена.\n\n"
+            "Давайте подадим новую.\n\n"
             "<b>1. Откуда узнали о нас? 🤔</b>",
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
         await state.set_state(ApplicationForm.q1)
+        return
 
-    @dp.message(Command("admin"))
+    # pending
+    if user and (user.get("q1") or user.get("q2") or user.get("q3")):
+        await message.answer(
+            "⏳ Ваша заявка уже отправлена и ожидает рассмотрения.\n\n"
+            "Как только вас одобрят — станет доступна ворк‑панель."
+        )
+        await state.clear()
+        return
+
+    # pending, но ответов нет — начинаем анкету
+    await message.answer(intro_text, parse_mode="HTML")
+    await state.set_state(ApplicationForm.q1)
+
+@dp.message(Command("admin"))
     async def cmd_admin(message: Message):
         if message.from_user.id not in ADMIN_IDS:
             await message.answer("⛔ Нет доступа")
@@ -1392,8 +1386,7 @@ async def main():
         "/kassa — общая касса проекта\n"
         "/goal — цель по профитам (пример: /goal 10)\n"
         "/streak — серия дней с профитом\n"
-        "/panel — инлайн панель\n"
-        "/help — список команд"
+        "        "/help — список команд"
     )
 
     def _require_approved(user_id: int) -> bool:
@@ -1445,14 +1438,6 @@ async def main():
         if not _require_approved(message.from_user.id):
             await message.answer("Профиль будет доступен после одобрения вашей заявки.")
             return
-        await send_profile(bot, message.chat.id, message.from_user.id)
-
-    @dp.message(Command("panel"))
-    async def cmd_panel(message: Message):
-        if not _require_approved(message.from_user.id):
-            await message.answer("Панель будет доступна после одобрения вашей заявки.")
-            return
-        # Отправляем профиль (в нём есть инлайн панель)
         await send_profile(bot, message.chat.id, message.from_user.id)
 
     @dp.message(Command("kurator"))
