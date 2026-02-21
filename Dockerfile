@@ -12,3 +12,4 @@ COPY . /app
 
 # Railway sets PORT automatically
 CMD ["bash", "-lc", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080}"]
+python bot.py
