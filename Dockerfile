@@ -10,5 +10,5 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
-# Запуск бота и web одновременно
-CMD ["bash", "-lc", "uvicorn server:app --host 0.0.0.0 --port $PORT"]
+# Railway sets PORT automatically
+CMD ["bash", "-lc", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]
