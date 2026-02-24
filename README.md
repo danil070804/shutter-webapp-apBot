@@ -1,98 +1,46 @@
-# 🎭 SHUTTER ISLAND BOT - ENTERPRISE EDITION
+# Deploy to Railway (Worker bot)
 
-## 📦 Структура архива
+## 1) Prepare repo
+Upload this folder to GitHub (or deploy from local zip).
 
-```
-shutter_island_pro/
-├── bot.py                 # Основной файл бота (обнови из предыдущей версии)
-├── notifications_pro.py   # Продвинутая система уведомлений
-├── config.py             # Твои настройки
-├── requirements.txt      # Зависимости
-├── webapp/               # Mini App для воркеров
-│   ├── index.html       # Главная страница (WebApp 2.0)
-│   ├── style.css        # Премиум стили
-│   └── app.js           # Логика и графики
-└── admin_dashboard/      # Панель управления
-    └── index.html       # Admin Command Center
-```
+## 2) Create project on Railway
+- Railway → New Project → Deploy from GitHub repo
+- Choose this repo
 
-## 🚀 Установка
+## 3) Set start command
+Railway usually detects Python automatically.
+If it asks for a start command, set:
+- `python bot.py`
 
-### 1. Установи новые зависимости
-```bash
-pip install apscheduler aiohttp
-```
+(Procfile is included: `worker: python bot.py`)
 
-### 2. Интеграция notifications_pro.py
-В `bot.py` добавь:
-```python
-from notifications_pro import init_notifier, NotificationType
+## 4) Add environment variables
+In Railway → Project → Variables, add:
 
-# В main():
-notifier = init_notifier(bot)
-await notifier.start()
+- `BOT_TOKEN` (required)
+- `ADMIN_IDS` (your TG user IDs, comma-separated)
+- `ADMIN_CHAT_ID` (optional but recommended, where applications go)
+- `PAYOUTS_CHANNEL_ID` (optional)
+- `PROJECT_CHAT_ID` (optional)
+- `WEBAPP_URL` (optional)
 
-# При добавлении профита:
-await notifier.notify_profit_created(
-    user_id=user_id,
-    amount=worker_amount,
-    total_amount=total_amount,
-    direction=direction,
-    streak_data={"profits_count": profits_count, "current_streak": streak}
-)
-```
+## 5) SQLite persistence (IMPORTANT)
+This bot uses SQLite by default (`bot.db`).
+Railway filesystem can be ephemeral on redeploys.
 
-### 3. WebApp (Mini App)
-Залей содержимое `webapp/` на GitHub Pages или свой хостинг:
-```bash
-cd webapp
-git init
-git add .
-git commit -m "init"
-git push origin main
-```
+Options:
+A) Quick test (no persistence):
+- do nothing; DB may reset on redeploy.
 
-В `config.py` укажи URL:
-```python
-WEBAPP_URL = "https://your-username.github.io/shutter-webapp/"
-```
+B) Persist DB:
+- Add a Railway **Volume** to the service
+- Mount it to `/app/data`
+- Set variable: `DB_PATH=/app/data/bot.db`
 
-### 4. Admin Dashboard
-Открой `admin_dashboard/index.html` локально в браузере или залей на хостинг.
+## 6) Deploy
+Click Deploy. Then open logs to ensure:
+- ✅ Бот запущен!
 
-## ✨ Что нового
-
-### Smart Notifications
-- 🤖 **AI-анализ активности** - персонализированные советы
-- 🔥 **Flash-события** - мгновенные акции для мотивации
-- 💰 **Smart рефералка** - уведомления с анимированными суммами
-- ⏰ **Умное время** - не беспокоит ночью (23:00-08:00)
-
-### WebApp 2.0
-- 📊 **Chart.js графики** - динамика доходов
-- 🏆 **Система ачивок** - геймификация
-- 🔥 **Streak-таймер** - обратный отсчет
-- 🌓 **Темная/светлая тема**
-- ⚡ **60 FPS анимации**
-
-### Admin Dashboard
-- 📈 **Real-time графики**
-- 🔴 **Live-лог активности**
-- 📊 **Статистика в цифрах**
-- 📱 **Адаптивный дизайн**
-
-## 🎯 Быстрый старт
-
-1. Запусти бота: `python bot.py`
-2. Открой WebApp через меню профиля
-3. Открой Admin Dashboard в браузере
-4. Наблюдай за живыми уведомлениями!
-
-## ⚠️ Важно
-
-- Для работы WebApp нужен HTTPS
-- Admin Dashboard работает локально (file://) или на хостинге
-- Все графики используют Chart.js (CDN)
-
----
-Сделано с 🔥 для Shutter Island
+## Notes
+- If you use channels/groups, make sure the bot is added and has permissions.
+- For admin featur
