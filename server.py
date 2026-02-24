@@ -1,195 +1,100 @@
-import json
+import asyncio
 import os
-import sqlite3
-import time
-import urllib.parse
-import hmac
-import hashlib
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config import TOKEN as BOT_TOKEN, DB_PATH
+# IMPORTANT:
+# - BOT_TOKEN must be set in env (config.py требует это)
+# - DB_PATH должен указывать на один и тот же sqlite файл для бота и веба
+import bot as bot_module  # bot.py (НЕ запускается при импорте)
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
+from db import engine, users, profits
 
 def _get_user(user_id: int) -> Optional[Dict[str, Any]]:
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT
-                user_id, username, status, profits_count, profits_sum,
-                goal_profits, current_streak, max_streak, last_profit_date,
-                joined_at, role, mentor_id, referrer_id
-            FROM users
-            WHERE user_id = ?
-            """,
-            (user_id,),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(
+                users.c.user_id, users.c.username, users.c.status, users.c.profits_count, users.c.profits_sum,
+                users.c.goal_profits, users.c.current_streak, users.c.max_streak, users.c.last_profit_date,
+                users.c.joined_at, users.c.role, users.c.mentor_id, users.c.referrer_id
+            ).where(users.c.user_id == user_id)
+        ).fetchone()
+
+    return dict(row._mapping) if row else None
 
 
 def _get_recent_profits(user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, total_amount, worker_percent, worker_amount, direction,
-                   mentor_id, mentor_amount, referrer_id, referrer_amount, created_at, admin_id
-            FROM profits
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (user_id, limit),
-        )
-        return [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    from sqlalchemy import select, desc
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(
+                profits.c.id, profits.c.total_amount, profits.c.worker_percent, profits.c.worker_amount,
+                profits.c.direction, profits.c.mentor_id, profits.c.mentor_amount,
+                profits.c.referrer_id, profits.c.referrer_amount, profits.c.created_at, profits.c.admin_id
+            )
+            .where(profits.c.user_id == user_id)
+            .order_by(desc(profits.c.created_at))
+            .limit(int(limit))
+        ).fetchall()
+
+    return [dict(r._mapping) for r in rows]
 
 
 def _get_top(limit: int = 20) -> List[Dict[str, Any]]:
-    conn = _connect()
+    from sqlalchemy import select, desc
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(users.c.user_id, users.c.username, users.c.profits_count, users.c.profits_sum, users.c.role)
+            .where(users.c.status == "approved")
+            .order_by(desc(users.c.profits_count), desc(users.c.profits_sum))
+            .limit(int(limit))
+        ).fetchall()
+
+    return [dict(r._mapping) for r in rows]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # гарантируем структуру БД
+    bot_module.init_db()
+
+    # запускаем polling бота в фоне
+    bot_task = asyncio.create_task(bot_module.main())
+
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT user_id, username, profits_count, profits_sum, role
-            FROM users
-            WHERE status = 'approved'
-            ORDER BY profits_count DESC, profits_sum DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        return [dict(r) for r in cur.fetchall()]
+        yield
     finally:
-        conn.close()
+        # мягкая остановка
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            pass
 
 
-# ---------------- Telegram WebApp initData verify ----------------
-def _parse_init_data(init_data: str) -> Dict[str, str]:
-    # init_data is querystring: key=val&key=val
-    pairs = {}
-    for part in init_data.split("&"):
-        if not part:
-            continue
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        pairs[k] = v
-    return pairs
-
-
-def _verify_init_data(init_data: str, max_age_sec: int = 60 * 60 * 24) -> Dict[str, Any]:
-    """Verify Telegram WebApp initData.
-    Returns parsed 'user' dict if valid, else raises HTTPException.
-    """
-    if not init_data:
-        raise HTTPException(status_code=401, detail="Missing initData")
-
-    data = _parse_init_data(init_data)
-
-    received_hash = data.get("hash")
-    if not received_hash:
-        raise HTTPException(status_code=401, detail="Missing hash")
-
-    # build data_check_string from sorted key=value (exclude hash)
-    check_items = []
-    for k in sorted(data.keys()):
-        if k == "hash":
-            continue
-        check_items.append(f"{k}={data[k]}")
-    data_check_string = "\n".join(check_items)
-
-    secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode("utf-8"), hashlib.sha256).digest()
-    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    if not hmac.compare_digest(calculated_hash, received_hash):
-        raise HTTPException(status_code=401, detail="Bad initData signature")
-
-    # auth_date age check
-    try:
-        auth_date = int(data.get("auth_date", "0"))
-    except ValueError:
-        auth_date = 0
-    if auth_date <= 0:
-        raise HTTPException(status_code=401, detail="Bad auth_date")
-    if int(time.time()) - auth_date > max_age_sec:
-        raise HTTPException(status_code=401, detail="initData expired")
-
-    # user is urlencoded JSON
-    user_raw = data.get("user")
-    if not user_raw:
-        raise HTTPException(status_code=401, detail="Missing user")
-    try:
-        user_json = json.loads(urllib.parse.unquote(user_raw))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Bad user json")
-
-    return user_json
-
-
-app = FastAPI(title="Shutter Island Web API")
+app = FastAPI(title="Shutter Island Bot + Web", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # можно ужесточить до вашего домена
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
+# --------- API ---------
 @app.get("/api/health")
 def health():
     return {"ok": True}
-
-
-@app.post("/api/me")
-async def api_me(request: Request):
-    """Return profile for current Telegram user (WebApp)."""
-    # initData can be sent via header or json body
-    init_data = request.headers.get("X-Telegram-Init-Data")
-    if not init_data:
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-        init_data = body.get("initData")
-
-    user = _verify_init_data(init_data)
-    user_id = int(user["id"])
-    db_user = _get_user(user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"telegram": {"id": user_id, "username": user.get("username")}, "profile": db_user}
-
-
-@app.post("/api/me/profits")
-async def api_me_profits(request: Request, limit: int = 20):
-    if limit < 1 or limit > 200:
-        raise HTTPException(status_code=400, detail="limit must be 1..200")
-    init_data = request.headers.get("X-Telegram-Init-Data")
-    if not init_data:
-        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
-        init_data = body.get("initData")
-    user = _verify_init_data(init_data)
-    user_id = int(user["id"])
-    db_user = _get_user(user_id)
-    if not db_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return {"user": user_id, "profits": _get_recent_profits(user_id, limit=limit)}
 
 
 @app.get("/api/user/{user_id}")
@@ -218,5 +123,10 @@ def api_top(limit: int = 20):
 
 
 # --------- Static web ---------
+# Главный Mini App
 if os.path.isdir("webapp"):
     app.mount("/", StaticFiles(directory="webapp", html=True), name="webapp")
+
+# Отдельная админка, если нужна
+if os.path.isdir("admin_dashboard"):
+    app.mount("/admin", StaticFiles(directory="admin_dashboard", html=True), name="admin")
