@@ -1,5 +1,4 @@
 import asyncio
-import sqlite3
 import time
 import math
 from datetime import datetime, date, timedelta
@@ -25,7 +24,6 @@ from config import (
     ADMIN_CHAT_ID,
     PAYOUTS_CHANNEL_ID,
     PROFILE_IMAGE_PATH,
-    DB_PATH,
     PROJECT_CHAT_ID,
     TIMEZONE,
     RANK_LEVELS,
@@ -97,215 +95,179 @@ class AdminSetGoalFSM(StatesGroup):
 # ==========================
 
 def init_db() -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            status TEXT NOT NULL DEFAULT 'pending',
-            q1 TEXT,
-            q2 TEXT,
-            q3 TEXT,
-            profits_count INTEGER NOT NULL DEFAULT 0,
-            profits_sum REAL NOT NULL DEFAULT 0,
-            goal_profits INTEGER NOT NULL DEFAULT 0,
-            current_streak INTEGER NOT NULL DEFAULT 0,
-            max_streak INTEGER NOT NULL DEFAULT 0,
-            last_profit_date TEXT,
-            joined_at INTEGER,
-            role TEXT NOT NULL DEFAULT 'worker',
-            mentor_id INTEGER,
-            referrer_id INTEGER
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS profits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            admin_id INTEGER NOT NULL,
-            total_amount REAL NOT NULL,
-            worker_percent REAL NOT NULL,
-            worker_amount REAL NOT NULL,
-            direction TEXT,
-            mentor_id INTEGER,
-            mentor_amount REAL DEFAULT 0,
-            referrer_id INTEGER,
-            referrer_amount REAL NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS admin_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            admin_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            target_user_id INTEGER,
-            details TEXT,
-            created_at INTEGER NOT NULL
-        )
-    """)
-
-    conn.commit()
-    conn.close()
+    # Создаем таблицы (sqlite или postgres) если их еще нет
+    from db import init_db as _init
+    _init()
 
 
 def get_user(user_id: int) -> Optional[Dict[str, Any]]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username, status, q1, q2, q3,
-               profits_count, profits_sum,
-               goal_profits, current_streak, max_streak, last_profit_date,
-               joined_at, role, mentor_id, referrer_id
-        FROM users WHERE user_id = ?
-    """, (user_id,))
-    row = cur.fetchone()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(
+                users.c.user_id, users.c.username, users.c.status, users.c.q1, users.c.q2, users.c.q3,
+                users.c.profits_count, users.c.profits_sum,
+                users.c.goal_profits, users.c.current_streak, users.c.max_streak, users.c.last_profit_date,
+                users.c.joined_at, users.c.role, users.c.mentor_id, users.c.referrer_id
+            ).where(users.c.user_id == user_id)
+        ).fetchone()
+
     if not row:
         return None
+
     return {
-        "user_id": row[0], "username": row[1], "status": row[2],
-        "q1": row[3], "q2": row[4], "q3": row[5],
-        "profits_count": row[6] or 0, "profits_sum": row[7] or 0,
-        "goal_profits": row[8] or 0, "current_streak": row[9] or 0,
-        "max_streak": row[10] or 0, "last_profit_date": row[11],
-        "joined_at": row[12], "role": row[13] or "worker",
-        "mentor_id": row[14], "referrer_id": row[15],
+        "user_id": row.user_id,
+        "username": row.username,
+        "status": row.status,
+        "q1": row.q1,
+        "q2": row.q2,
+        "q3": row.q3,
+        "profits_count": row.profits_count or 0,
+        "profits_sum": row.profits_sum or 0,
+        "goal_profits": row.goal_profits or 0,
+        "current_streak": row.current_streak or 0,
+        "max_streak": row.max_streak or 0,
+        "last_profit_date": row.last_profit_date,
+        "joined_at": row.joined_at,
+        "role": row.role or "worker",
+        "mentor_id": row.mentor_id,
+        "referrer_id": row.referrer_id,
     }
 
 
 def create_or_update_user(user_id: int, username: Optional[str], status: str,
                           referrer_id: Optional[int] = None) -> None:
-    """Создаёт пользователя или обновляет username/status, не перезатирая роль."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+    from db import engine, users
+    from sqlalchemy import select, insert, update
 
-    # Если пользователь уже есть — сохраняем текущую роль
-    cur.execute("SELECT role FROM users WHERE user_id = ?", (user_id,))
-    existing = cur.fetchone()
-    if existing and existing[0]:
-        role = existing[0]
-    else:
-        role = "admin" if user_id in ADMIN_IDS else "worker"
+    role = "admin" if user_id in ADMIN_IDS else "worker"
 
-    cur.execute("""
-        INSERT INTO users (user_id, username, status, role, referrer_id)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            username = excluded.username,
-            status = excluded.status
-    """, (user_id, username, status, role, referrer_id))
+    with engine.begin() as conn:
+        exists = conn.execute(select(users.c.user_id).where(users.c.user_id == user_id)).fetchone()
+        if exists:
+            conn.execute(
+                update(users)
+                .where(users.c.user_id == user_id)
+                .values(username=username, status=status, role=role)
+            )
+        else:
+            conn.execute(
+                insert(users).values(
+                    user_id=user_id,
+                    username=username,
+                    status=status,
+                    role=role,
+                    referrer_id=referrer_id,
+                )
+            )
 
-    if referrer_id is not None:
-        cur.execute(
-            "UPDATE users SET referrer_id = COALESCE(referrer_id, ?) WHERE user_id = ?",
-            (referrer_id, user_id),
-        )
-
-    conn.commit()
-    conn.close()
+        # если пришел referrer_id — проставляем только если он еще не задан
+        if referrer_id is not None:
+            row = conn.execute(select(users.c.referrer_id).where(users.c.user_id == user_id)).fetchone()
+            if row and row.referrer_id is None:
+                conn.execute(update(users).where(users.c.user_id == user_id).values(referrer_id=referrer_id))
 
 
 def update_user_answers(user_id: int, q1: Optional[str] = None, q2: Optional[str] = None,
                         q3: Optional[str] = None, status: Optional[str] = None) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    fields = []
-    values = []
+    from db import engine, users
+    from sqlalchemy import update
+
+    values = {}
     if q1 is not None:
-        fields.append("q1 = ?")
-        values.append(q1)
+        values["q1"] = q1
     if q2 is not None:
-        fields.append("q2 = ?")
-        values.append(q2)
+        values["q2"] = q2
     if q3 is not None:
-        fields.append("q3 = ?")
-        values.append(q3)
+        values["q3"] = q3
     if status is not None:
-        fields.append("status = ?")
-        values.append(status)
-    if not fields:
-        conn.close()
+        values["status"] = status
+    if not values:
         return
-    values.append(user_id)
-    query = "UPDATE users SET " + ", ".join(fields) + " WHERE user_id = ?"
-    cur.execute(query, values)
-    conn.commit()
-    conn.close()
+
+    with engine.begin() as conn:
+        conn.execute(update(users).where(users.c.user_id == user_id).values(**values))
 
 
 def approve_user(user_id: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE users SET status = ?, joined_at = ? WHERE user_id = ?",
-        ("approved", int(time.time()), user_id),
-    )
-    conn.commit()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import update
+
+    with engine.begin() as conn:
+        conn.execute(
+            update(users)
+            .where(users.c.user_id == user_id)
+            .values(status="approved", joined_at=int(time.time()))
+        )
 
 
 def reject_user(user_id: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET status = ? WHERE user_id = ?", ("rejected", user_id))
-    conn.commit()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import update
+
+    with engine.begin() as conn:
+        conn.execute(update(users).where(users.c.user_id == user_id).values(status="rejected"))
 
 
 def set_user_role(user_id: int, role: str) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
-    conn.commit()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import update
+
+    with engine.begin() as conn:
+        conn.execute(update(users).where(users.c.user_id == user_id).values(role=role))
 
 
 def get_mentor_profit_count(user_id: int, mentor_id: int) -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM profits WHERE user_id = ? AND mentor_id = ?", (user_id, mentor_id))
-    count = cur.fetchone()[0] or 0
-    conn.close()
-    return count
+    from db import engine, profits
+    from sqlalchemy import select, func
+
+    with engine.connect() as conn:
+        count = conn.execute(
+            select(func.count()).select_from(profits)
+            .where((profits.c.user_id == user_id) & (profits.c.mentor_id == mentor_id))
+        ).scalar_one()
+    return int(count or 0)
 
 
 def get_workers_for_mentor(mentor_id: int) -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, username, profits_count, profits_sum, current_streak, 
-               max_streak, last_profit_date, goal_profits
-        FROM users WHERE mentor_id = ? AND status = 'approved'
-        ORDER BY profits_count DESC, profits_sum DESC
-    """, (mentor_id,))
-    rows = cur.fetchall()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import select, desc
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(
+                users.c.user_id, users.c.username, users.c.profits_count, users.c.profits_sum,
+                users.c.current_streak, users.c.max_streak, users.c.last_profit_date, users.c.goal_profits
+            )
+            .where((users.c.mentor_id == mentor_id) & (users.c.status == "approved"))
+            .order_by(desc(users.c.profits_count), desc(users.c.profits_sum))
+        ).fetchall()
+
     return [{
-        "user_id": r[0], "username": r[1], "profits_count": r[2] or 0,
-        "profits_sum": r[3] or 0, "current_streak": r[4] or 0,
-        "max_streak": r[5] or 0, "last_profit_date": r[6], "goal_profits": r[7] or 0,
+        "user_id": r.user_id,
+        "username": r.username,
+        "profits_count": r.profits_count or 0,
+        "profits_sum": r.profits_sum or 0,
+        "current_streak": r.current_streak or 0,
+        "max_streak": r.max_streak or 0,
+        "last_profit_date": r.last_profit_date,
+        "goal_profits": r.goal_profits or 0,
     } for r in rows]
 
 
 def get_all_mentors() -> list[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id, username FROM users WHERE role = 'mentor' AND status = 'approved'")
-    rows = cur.fetchall()
-    conn.close()
-    return [{"user_id": r[0], "username": r[1]} for r in rows]
+    from db import engine, users
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(users.c.user_id, users.c.username)
+            .where((users.c.role == "mentor") & (users.c.status == "approved"))
+        ).fetchall()
+
+    return [{"user_id": r.user_id, "username": r.username} for r in rows]
 
 
 def parse_iso_date(s: str | None) -> Optional[date]:
@@ -337,6 +299,9 @@ def get_inactive_workers_for_mentor(mentor_id: int, days: int) -> list[dict]:
 
 def add_profit_record(user_id: int, admin_id: int, total_amount: float,
                       worker_percent: float, direction: str) -> Dict[str, Any]:
+    from db import engine, users, profits
+    from sqlalchemy import select, insert, update
+
     user = get_user(user_id)
     if not user or user["status"] != "approved":
         raise ValueError("Worker not approved")
@@ -357,101 +322,136 @@ def add_profit_record(user_id: int, admin_id: int, total_amount: float,
     if referrer_id:
         referrer_amount = round(base_worker_amount * 0.05, 2)
 
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO profits (user_id, admin_id, total_amount, worker_percent, worker_amount,
-            direction, mentor_id, mentor_amount, referrer_id, referrer_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (user_id, admin_id, total_amount, worker_percent, worker_amount,
-          direction, mentor_id, mentor_amount, referrer_id, referrer_amount, int(time.time())))
-
-    cur.execute("""
-        UPDATE users SET profits_count = profits_count + 1, profits_sum = profits_sum + ?
-        WHERE user_id = ?
-    """, (worker_amount, user_id))
-
-    # Обновляем стрик
     profit_day = datetime.now(ZoneInfo(TIMEZONE)).date()
-    cur.execute("SELECT current_streak, max_streak, last_profit_date FROM users WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
+    now_ts = int(time.time())
 
-    if row:
-        current, max_s, last_s = int(row[0] or 0), int(row[1] or 0), row[2]
-        last_day = parse_iso_date(last_s)
+    with engine.begin() as conn:
+        conn.execute(
+            insert(profits).values(
+                user_id=user_id,
+                admin_id=admin_id,
+                total_amount=total_amount,
+                worker_percent=worker_percent,
+                worker_amount=worker_amount,
+                direction=direction,
+                mentor_id=mentor_id,
+                mentor_amount=mentor_amount,
+                referrer_id=referrer_id,
+                referrer_amount=referrer_amount,
+                created_at=now_ts,
+            )
+        )
 
-        if last_day == profit_day:
-            new_current = current
-        else:
-            yesterday = profit_day - timedelta(days=1)
-            if last_day == yesterday:
-                new_current = current + 1 if current > 0 else 1
+        conn.execute(
+            update(users)
+            .where(users.c.user_id == user_id)
+            .values(
+                profits_count=users.c.profits_count + 1,
+                profits_sum=users.c.profits_sum + float(worker_amount),
+            )
+        )
+
+        row = conn.execute(
+            select(users.c.current_streak, users.c.max_streak, users.c.last_profit_date)
+            .where(users.c.user_id == user_id)
+        ).fetchone()
+
+        if row:
+            current = int(row.current_streak or 0)
+            max_s = int(row.max_streak or 0)
+            last_s = row.last_profit_date
+            last_day = parse_iso_date(last_s)
+
+            if last_day == profit_day:
+                new_current = current
             else:
-                new_current = 1
+                yesterday = profit_day - timedelta(days=1)
+                if last_day == yesterday:
+                    new_current = current + 1 if current > 0 else 1
+                else:
+                    new_current = 1
 
-        new_max = max(max_s, new_current)
-        cur.execute("""
-            UPDATE users SET current_streak = ?, max_streak = ?, last_profit_date = ? 
-            WHERE user_id = ?
-        """, (new_current, new_max, profit_day.isoformat(), user_id))
-    else:
-        new_current, new_max = 1, 1
+            new_max = max(max_s, new_current)
 
-    conn.commit()
-    conn.close()
+            conn.execute(
+                update(users)
+                .where(users.c.user_id == user_id)
+                .values(
+                    current_streak=new_current,
+                    max_streak=new_max,
+                    last_profit_date=profit_day.isoformat(),
+                )
+            )
+        else:
+            new_current, new_max = 1, 1
 
     return {
-        "worker_amount": worker_amount, "mentor_id": mentor_id,
-        "mentor_amount": mentor_amount, "referrer_id": referrer_id,
-        "referrer_amount": referrer_amount, "current_streak": new_current,
+        "worker_amount": worker_amount,
+        "mentor_id": mentor_id,
+        "mentor_amount": mentor_amount,
+        "referrer_id": referrer_id,
+        "referrer_amount": referrer_amount,
+        "current_streak": new_current,
         "max_streak": new_max,
     }
 
 
 def set_setting(key: str, value: str) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                (key, value))
-    conn.commit()
-    conn.close()
+    from db import engine, settings
+    from sqlalchemy import select, insert, update
+
+    with engine.begin() as conn:
+        exists = conn.execute(select(settings.c.key).where(settings.c.key == key)).fetchone()
+        if exists:
+            conn.execute(update(settings).where(settings.c.key == key).values(value=value))
+        else:
+            conn.execute(insert(settings).values(key=key, value=value))
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else default
+    from db import engine, settings
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        row = conn.execute(select(settings.c.value).where(settings.c.key == key)).fetchone()
+    return (row.value if row else None) or default
 
 
 def get_approved_user_ids():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE status = 'approved'")
-    rows = cur.fetchall()
-    conn.close()
-    return [r[0] for r in rows]
+    from db import engine, users
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        rows = conn.execute(select(users.c.user_id).where(users.c.status == "approved")).fetchall()
+    return [r.user_id for r in rows]
 
 
 def get_global_stats() -> Dict[str, Any]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT COUNT(*), COUNT(CASE WHEN status = 'approved' THEN 1 END), COUNT(CASE WHEN status = 'pending' THEN 1 END) FROM users")
-    total, approved, pending = cur.fetchone()
-    cur.execute("SELECT COUNT(*), COALESCE(SUM(total_amount), 0) FROM profits")
-    profits, amount = cur.fetchone()
-    conn.close()
+    from db import engine, users, profits
+    from sqlalchemy import select, func, case
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(
+                func.count(users.c.user_id),
+                func.sum(case((users.c.status == "approved", 1), else_=0)),
+                func.sum(case((users.c.status == "pending", 1), else_=0)),
+            )
+        ).fetchone()
+        total, approved, pending = (row[0] or 0), (row[1] or 0), (row[2] or 0)
+
+        prow = conn.execute(
+            select(func.count(profits.c.id), func.coalesce(func.sum(profits.c.total_amount), 0))
+        ).fetchone()
+        profits_count, amount = (prow[0] or 0), float(prow[1] or 0)
+
     return {
-        "total_users": total or 0, "total_approved": approved or 0,
-        "total_pending": pending or 0, "profits_count": profits or 0,
-        "total_amount": amount or 0,
+        "total_users": int(total),
+        "total_approved": int(approved),
+        "total_pending": int(pending),
+        "profits_count": int(profits_count),
+        "total_amount": amount,
     }
-
-
 
 
 def get_users_stats() -> Dict[str, Any]:
@@ -460,35 +460,50 @@ def get_users_stats() -> Dict[str, Any]:
 
 
 def get_kassa_stats() -> Dict[str, float]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+    from db import engine, profits
+    from sqlalchemy import select, func
+
     now = int(time.time())
     day_start = int(datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp())
     week_start = now - 7 * 24 * 3600
     month_start = now - 30 * 24 * 3600
 
     def sum_since(ts: int) -> float:
-        cur.execute("SELECT COALESCE(SUM(total_amount), 0) FROM profits WHERE created_at >= ?", (ts,))
-        return float(cur.fetchone()[0] or 0)
+        with engine.connect() as conn:
+            val = conn.execute(
+                select(func.coalesce(func.sum(profits.c.total_amount), 0))
+                .where(profits.c.created_at >= ts)
+            ).scalar_one()
+        return float(val or 0)
 
-    stats = {"all_time": sum_since(0), "month": sum_since(month_start), "week": sum_since(week_start),
-             "day": sum_since(day_start)}
-    conn.close()
-    return stats
+    return {
+        "all_time": sum_since(0),
+        "month": sum_since(month_start),
+        "week": sum_since(week_start),
+        "day": sum_since(day_start),
+    }
 
 
 def get_admin_logs(limit: int = 20) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, admin_id, action, target_user_id, details, created_at FROM admin_logs ORDER BY id DESC LIMIT ?",
-        (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    return [{"id": r[0], "admin_id": r[1], "action": r[2], "target_user_id": r[3], "details": r[4] or "",
-             "created_at": r[5]} for r in rows]
+    from db import engine, admin_logs
+    from sqlalchemy import select, desc
 
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(
+                admin_logs.c.id, admin_logs.c.admin_id, admin_logs.c.action,
+                admin_logs.c.target_user_id, admin_logs.c.details, admin_logs.c.created_at
+            ).order_by(desc(admin_logs.c.id)).limit(int(limit))
+        ).fetchall()
 
+    return [{
+        "id": r.id,
+        "admin_id": r.admin_id,
+        "action": r.action,
+        "target_user_id": r.target_user_id,
+        "details": r.details or "",
+        "created_at": r.created_at,
+    } for r in rows]
 def format_ts(ts: int) -> str:
     try:
         return datetime.fromtimestamp(ts, tz=ZoneInfo(TIMEZONE)).strftime("%d.%m %H:%M")
@@ -511,15 +526,21 @@ def get_rank_for_profits(profits_count: int) -> Dict[str, str]:
 
 
 def get_user_rank_position(user_id: int) -> int | None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE status = 'approved' ORDER BY profits_count DESC, profits_sum DESC")
-    rows = cur.fetchall()
-    conn.close()
-    for i, (uid,) in enumerate(rows, start=1):
-        if int(uid) == int(user_id):
+    from db import engine, users
+    from sqlalchemy import select, desc
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(users.c.user_id)
+            .where(users.c.status == "approved")
+            .order_by(desc(users.c.profits_count), desc(users.c.profits_sum))
+        ).fetchall()
+
+    for i, r in enumerate(rows, start=1):
+        if int(r.user_id) == int(user_id):
             return i
     return None
+
 
 
 def format_last_profit_date(last_profit_date: str | None) -> str:
@@ -540,11 +561,16 @@ def render_progress_bar(done: int, total: int, length: int = 10) -> str:
 
 
 def set_user_goal(user_id: int, goal_profits: int) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET goal_profits = ? WHERE user_id = ?", (goal_profits, user_id))
-    conn.commit()
-    conn.close()
+    from db import engine, users
+    from sqlalchemy import update
+
+    with engine.begin() as conn:
+        conn.execute(
+            update(users)
+            .where(users.c.user_id == user_id)
+            .values(goal_profits=int(goal_profits))
+        )
+
 
 
 # ==========================
@@ -625,8 +651,12 @@ def dashboard_kb(user: Dict[str, Any]) -> InlineKeyboardMarkup:
     is_admin = user.get("user_id") in ADMIN_IDS
     is_mentor = user.get("role") == "mentor"
 
-    # WebApp: не передаём данные в query (безопаснее) — WebApp сам подтянет профиль через initData
-    webapp_url_with_data = WEBAPP_URL.rstrip('/') if WEBAPP_URL else ''
+    # Формируем URL с реальными данными пользователя
+    webapp_url_with_data = WEBAPP_URL
+    if WEBAPP_URL:
+        # Добавляем параметры к URL
+        params = f"?uid={user['user_id']}&uname={user.get('username', '')}&profits={user['profits_count']}&sum={int(user['profits_sum'])}&streak={user['current_streak']}&max_streak={user['max_streak']}&goal={user['goal_profits']}&role={user['role']}&mentor={user.get('mentor_id', '')}"
+        webapp_url_with_data = WEBAPP_URL.rstrip('/') + params
 
     buttons = [
         [
@@ -1001,16 +1031,18 @@ async def main():
 
         # Обновляем username/role, но сохраняем текущий status
         try:
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            role = "admin" if user_id in ADMIN_IDS else "worker"
-            cur.execute(
-                "UPDATE users SET username = COALESCE(?, username), role = ? WHERE user_id = ?",
-                (username, role, user_id),
-            )
-            conn.commit()
-        except Exception:
-            pass
+    from db import engine, users
+    from sqlalchemy import update
+
+    role = "admin" if user_id in ADMIN_IDS else "worker"
+    values = {"role": role}
+    if username is not None:
+        values["username"] = username
+
+    with engine.begin() as conn:
+        conn.execute(update(users).where(users.c.user_id == user_id).values(**values))
+except Exception:
+    pass
         finally:
             try:
                 conn.close()
@@ -1192,11 +1224,13 @@ async def main():
     async def admin_apps_cmd(message: Message):
         if message.from_user.id not in ADMIN_IDS:
             return
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT user_id, username, q1 FROM users WHERE status = 'pending'")
-        rows = cur.fetchall()
-        conn.close()
+        from db import engine, users
+    from sqlalchemy import select
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(users.c.user_id, users.c.username, users.c.q1).where(users.c.status == "pending")
+        ).fetchall()
 
         if not rows:
             await message.answer("📨 Нет заявок.")
@@ -1402,23 +1436,22 @@ async def main():
         return int(ms.timestamp())
 
     def _top_since(ts: int | None, limit: int = 20) -> list[tuple[int, float]]:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        if ts is None:
-            cur.execute(
-                "SELECT user_id, COALESCE(SUM(total_amount),0) as s "
-                "FROM profits GROUP BY user_id ORDER BY s DESC LIMIT ?",
-                (limit,),
-            )
-        else:
-            cur.execute(
-                "SELECT user_id, COALESCE(SUM(total_amount),0) as s "
-                "FROM profits WHERE created_at >= ? GROUP BY user_id ORDER BY s DESC LIMIT ?",
-                (ts, limit),
-            )
-        rows = cur.fetchall()
-        conn.close()
-        return [(int(r[0]), float(r[1] or 0)) for r in rows]
+        from db import engine, profits
+        from sqlalchemy import select, func, desc
+
+        stmt = (
+            select(profits.c.user_id, func.coalesce(func.sum(profits.c.total_amount), 0).label("s"))
+            .group_by(profits.c.user_id)
+            .order_by(desc("s"))
+            .limit(int(limit))
+        )
+        if ts is not None:
+            stmt = stmt.where(profits.c.created_at >= int(ts))
+
+        with engine.connect() as conn:
+            rows = conn.execute(stmt).fetchall()
+
+        return [(int(r.user_id), float(r.s or 0)) for r in rows]
 
     async def _send_top(message: Message, title: str, rows: list[tuple[int, float]]):
         if not rows:
@@ -1744,13 +1777,16 @@ async def main():
         me = await bot.get_me()
         ref_link = f"https://t.me/{me.username}?start=ref{user_id}"
 
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
-        count = cur.fetchone()[0]
-        cur.execute("SELECT COALESCE(SUM(referrer_amount), 0) FROM profits WHERE referrer_id = ?", (user_id,))
-        earned = cur.fetchone()[0] or 0
-        conn.close()
+from db import engine, users, profits
+from sqlalchemy import select, func
+
+with engine.connect() as conn:
+    count = conn.execute(
+        select(func.count()).select_from(users).where(users.c.referrer_id == user_id)
+    ).scalar_one() or 0
+    earned = conn.execute(
+        select(func.coalesce(func.sum(profits.c.referrer_amount), 0)).where(profits.c.referrer_id == user_id)
+    ).scalar_one() or 0
 
         text = (
             f"🧳 <b>Реферальная программа</b>\n\n"
@@ -1908,11 +1944,13 @@ async def main():
             await bot.send_message(callback.message.chat.id, text, parse_mode="HTML",
                                    reply_markup=admin_dashboard_inline_kb())
         elif action == "apps":
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM users WHERE status = 'pending'")
-            count = cur.fetchone()[0]
-            conn.close()
+            from db import engine, users
+        from sqlalchemy import select, func
+
+        with engine.connect() as conn:
+            count = conn.execute(
+                select(func.count()).select_from(users).where(users.c.status == "pending")
+            ).scalar_one() or 0
             await bot.send_message(callback.message.chat.id, f"📨 Заявок: {count}\n\nИспользуйте кнопку '📨 Заявки'",
                                    reply_markup=admin_dashboard_inline_kb())
         elif action == "settings":
